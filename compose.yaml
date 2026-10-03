@@ -8,3 +8,5 @@ services:
     volumes:
       - ./work:/work
       - ./cache:/cache
+      # スクリプトの修正をイメージの再ビルドなしで反映する
+      - ./upconv.py:/app/upconv.py:ro

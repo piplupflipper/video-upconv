@@ -106,7 +106,13 @@ def main() -> None:
     args = parse_args()
     os.makedirs(args.cache_dir, exist_ok=True)
 
+    if not os.path.isfile(args.input):
+        sys.exit(f"upconv.py: 入力ファイルがコンテナ内に見つからない: {args.input}\n"
+                 "work/ の外にある動画は upconv.sh 経由で渡す")
+
     src = core.bs.VideoSource(args.input)
+    if args.start >= src.num_frames:
+        sys.exit(f"upconv.py: --start {args.start} が入力のフレーム数 {src.num_frames} 以上になっている")
     if args.frames:
         src = src[args.start : args.start + args.frames]
     elif args.start:
