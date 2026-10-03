@@ -43,6 +43,22 @@ def non_negative_int(value: str) -> int:
     return n
 
 
+def det_size_value(value: str) -> int:
+    n = non_negative_int(value)
+    # 検出器は 32 画素ごとの格子で顔を探すので、32 の倍数でないと推論で失敗する。
+    if n == 0 or n % 32:
+        raise argparse.ArgumentTypeError(f"32 の倍数で指定する: {value}")
+    return n
+
+
+def qp_value(value: str) -> int:
+    n = non_negative_int(value)
+    # 10bit の libx264 の量子化値は 0 から 63 である。
+    if n > 63:
+        raise argparse.ArgumentTypeError(f"0 から 63 で指定する: {value}")
+    return n
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("input")
@@ -52,13 +68,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "複数のときは、同一人物の判定に全画像の顔埋め込みの平均を使い、交換元の顔には 1 枚目を使う")
     p.add_argument("--threshold", type=float, default=0.35,
                    help="同一人物とみなすコサイン類似度の下限。上げると交換する顔が減る")
-    p.add_argument("--det-size", type=int, default=640,
-                   help="顔検出の入力の一辺。大きいほど小さく映った顔を検出できるが遅くなる")
+    p.add_argument("--det-size", type=det_size_value, default=640,
+                   help="顔検出の入力の一辺 (32 の倍数)。大きいほど小さく映った顔を検出できるが遅くなる")
     p.add_argument("--start", type=non_negative_int, default=0, help="処理を始めるフレーム番号 (試し切り用)")
     p.add_argument("--frames", type=non_negative_int, default=0,
                    help="処理するフレーム数。0 で最後まで (試し切り用)")
-    p.add_argument("--qp", type=int, default=0,
-                   help="中間動画の libx264 の量子化値。0 は可逆。上げるとファイルが小さくなり画質が落ちる")
+    p.add_argument("--qp", type=qp_value, default=0,
+                   help="中間動画の libx264 の量子化値 (0 から 63)。0 は可逆。上げるとファイルが小さくなり画質が落ちる")
     p.add_argument("--cache-dir", default="/cache/faceswap",
                    help="buffalo_l (自動で取得する) と inswapper_128 の置き場")
     p.add_argument("--swapper", default="inswapper_128.onnx",
