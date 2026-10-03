@@ -49,7 +49,25 @@ for m in ["OpenProteus_Compact_2x", "realesr_general_x4v3", "realesr_general_wdn
     retry(dl_sr, f"https://github.com/HolyWu/vs-realesrgan/releases/download/model/{m}.pth")
 EOF
 
+# 顔交換 (face_swap.py) の依存は torch の層とモデルの層より後ろに置き、ここを変えてもそれらを取得し直さずに済むようにする。
+# pip freeze を制約に渡して、torch の層で入ったパッケージ (numpy 2 系を含む) の版が動く組み合わせなら失敗させる。
+# insightface 0.7.3 は PyPI に sdist しか無く、Cython の C++ 拡張をビルドするので、g++ と Python.h をこの層の中だけで使う。
+# onnxruntime-gpu は 1.27 から CUDA 13 用で、CUDA と cuDNN の共有ライブラリは torch と一緒に入ったものを使う。
+# insightface が依存する albumentations は opencv-python-headless を要求するので、cv2 はこれ 1 つに揃える。
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends g++ python3-dev \
+ && pip freeze > /tmp/constraints.txt \
+ && pip install -c /tmp/constraints.txt \
+      onnxruntime-gpu==1.30.0 \
+      insightface==0.7.3 \
+      opencv-python-headless==4.14.0.94 \
+ && rm /tmp/constraints.txt \
+ && apt-get purge -y --auto-remove g++ python3-dev \
+ && rm -rf /var/lib/apt/lists/* \
+ && python -c "import cv2, insightface, onnxruntime"
+
 COPY upconv.py /app/upconv.py
+COPY face_swap.py /app/face_swap.py
 
 # TensorRT エンジンと各種キャッシュは /cache (ボリューム) に置く。
 ENV HOME=/cache/home \

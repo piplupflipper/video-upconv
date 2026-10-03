@@ -3,3 +3,4 @@
 # TensorRT エンジンなどのキャッシュ (GPU と版ごとに固有)
 /cache
 /build.log
+__pycache__/

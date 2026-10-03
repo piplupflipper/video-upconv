@@ -10,3 +10,4 @@ services:
       - ./cache:/cache
       # スクリプトの修正をイメージの再ビルドなしで反映する
       - ./upconv.py:/app/upconv.py:ro
+      - ./face_swap.py:/app/face_swap.py:ro
