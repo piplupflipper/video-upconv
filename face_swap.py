@@ -435,6 +435,7 @@ class Stats:
     def __init__(self) -> None:
         self.face_frames = 0  # 顔を 1 つ以上検出したフレーム数
         self.swapped = 0
+        self.failed = 0  # 交換の対象にしたが、inswapper が貼り戻せなかった顔の延べ数
         self.det_scores: list[float] = []  # 検出した顔ごとの検出スコア
         self.similarities: list[float] = []  # 検出した顔ごとの、--target との類似度
         self.frame_best: list[float] = []  # 顔を検出したフレームごとの、類似度の最大
@@ -448,6 +449,8 @@ class Stats:
                 passed = sum(v >= args.threshold for v in values)
                 out.append(f"{label}: {distribution(values)}  "
                            f"(>= --threshold {short(args.threshold)}: {passed})")
+        if self.failed:
+            out.append(f"failed    : n={self.failed}  (交換の対象だが貼り戻せなかった顔。swapped には数えていない)")
         return out
 
 
@@ -505,7 +508,13 @@ def main() -> None:
                 best = similarity if best is None else max(best, similarity)
                 if similarity < args.threshold:
                     continue
-            out = swapper.get(out, face, source_face, paste_back=True)
+            try:
+                out = swapper.get(out, face, source_face, paste_back=True)
+            except ValueError:
+                # 位置合わせした顔の領域がフレームと重ならないと、inswapper は貼り戻す範囲を求められずに例外を出す。
+                # --det-thresh を下げたときの誤検出で起きるので、その顔だけを飛ばして続ける。
+                stats.failed += 1
+                continue
             stats.swapped += 1
         if best is not None:
             stats.frame_best.append(best)
