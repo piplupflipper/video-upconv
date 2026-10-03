@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # 任意の場所にある動画の顔を交換し、upconv.sh へ渡す中間動画を作る。
-# 入力ファイル、出力ファイル、参照画像のディレクトリをコンテナへマウントしてから face_swap.py を呼ぶ。
+# 入力ファイル、出力ファイル、--ref と --target の画像のディレクトリをコンテナへマウントしてから face_swap.py を呼ぶ。
 #
-# 使い方: ./face_swap.sh <input> <output> --ref <画像>[,<画像>...] [face_swap.py のオプション...]
+# 使い方: ./face_swap.sh <input> <output> --ref <画像>[,<画像>...] [--target <画像>[,<画像>...]] [face_swap.py のオプション...]
 #         ./face_swap.sh --help
 set -euo pipefail
 
@@ -36,24 +36,29 @@ fi
 mounts=()
 declare -A mounted=()
 
-# カンマ区切りの参照画像を、コンテナ内のパス (/ref + ホストの絶対パス) に書き換えて $mapped に入れる。
-# 画像のディレクトリは、同じものを二重に指定しないよう 1 回だけマウントする。
-map_refs() {
-  local parts=() p abs dir
+# オプション $1 に渡されたカンマ区切りの画像 $2 を、コンテナ内のパス (/ref + ホストの絶対パス) に書き換えて $mapped に入れる。
+# 画像のディレクトリは、--ref と --target を通じて、同じものを二重に指定しないよう 1 回だけマウントする。
+map_images() {
+  local opt=$1 parts=() p abs dir
   mapped=""
-  IFS=, read -ra parts <<< "$1"
+  IFS=, read -ra parts <<< "$2"
   if [[ ${#parts[@]} -eq 0 ]]; then
-    echo "face_swap.sh: --ref が空である" >&2
+    echo "face_swap.sh: $opt が空である" >&2
+    exit 1
+  fi
+  # read は末尾の空の要素を捨てるので、末尾のカンマは先に調べる。
+  if [[ $2 == *, ]]; then
+    echo "face_swap.sh: $opt に空の要素がある: $2" >&2
     exit 1
   fi
   for p in "${parts[@]}"; do
     if [[ -z $p ]]; then
-      echo "face_swap.sh: --ref に空の要素がある: $1" >&2
+      echo "face_swap.sh: $opt に空の要素がある: $2" >&2
       exit 1
     fi
     abs=$(realpath -m "$p")
     if [[ ! -f $abs ]]; then
-      echo "face_swap.sh: 参照画像が見つからない: $abs" >&2
+      echo "face_swap.sh: $opt の画像が見つからない: $abs" >&2
       exit 1
     fi
     dir=$(dirname "$abs")
@@ -68,17 +73,17 @@ map_refs() {
 args=()
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --ref=*)
-      map_refs "${1#--ref=}"
-      args+=("--ref=$mapped")
+    --ref=* | --target=*)
+      map_images "${1%%=*}" "${1#*=}"
+      args+=("${1%%=*}=$mapped")
       ;;
-    --ref)
+    --ref | --target)
       if [[ $# -lt 2 ]]; then
-        echo "face_swap.sh: --ref に参照画像のパスが必要である" >&2
+        echo "face_swap.sh: $1 に画像のパスが必要である" >&2
         exit 1
       fi
-      map_refs "$2"
-      args+=(--ref "$mapped")
+      map_images "$1" "$2"
+      args+=("$1" "$mapped")
       shift
       ;;
     *)
