@@ -1,9 +1,9 @@
-"""マスク着用女性のみを参照顔で置換する前段スクリプト。
+"""動画に映る顔のうち、参照画像と同一人物と判定した顔だけを、参照画像の顔に交換する。
 
-upconv.py の前に実行し、中間動画を作る。
-RIFE や Real-ESRGAN とは別プロセスで動かし、8GB VRAM での同時常駐を避ける。
-検出と埋め込みに InsightFace を使い、交換に inswapper_128 を使う。
-男性や閾値未満の顔は無処理で残す。
+upconv.py の前段として実行し、upconv.py に渡す中間動画を作る。
+RIFE や Real-ESRGAN とは別のプロセスで動かすので、8GB の VRAM に両方のモデルが同時に載ることはない。
+顔の検出と埋め込みには InsightFace の buffalo_l を、交換には inswapper_128 を使う。
+参照画像の顔埋め込みとのコサイン類似度が --threshold 以上の顔を同一人物とみなし、それ未満の顔には手を加えない。
 """
 
 import argparse
@@ -15,21 +15,23 @@ import numpy as np
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__)
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("input")
     p.add_argument("output")
     p.add_argument("--ref", required=True,
-                   help="マスク無し女性参照画像。カンマ区切りで複数可")
+                   help="交換後の顔にする人物の画像。カンマ区切りで複数渡せる。"
+                        "複数のときは、同一人物の判定に全画像の顔埋め込みの平均を使い、交換元の顔には 1 枚目を使う")
     p.add_argument("--threshold", type=float, default=0.35,
-                   help="参照埋め込みとのコサイン類似度の閾値。以上を女性対象とする")
+                   help="同一人物とみなすコサイン類似度の下限。上げると交換する顔が減る")
     p.add_argument("--det-size", type=int, default=640,
-                   help="検出入力の一辺。大きいほど小顔に強いが重い")
-    p.add_argument("--start", type=int, default=0)
-    p.add_argument("--frames", type=int, default=0, help="処理する元フレーム数。0 で最後まで")
+                   help="顔検出の入力の一辺。大きいほど小さく映った顔を検出できるが遅くなる")
+    p.add_argument("--start", type=int, default=0, help="処理を始めるフレーム番号 (試し切り用)")
+    p.add_argument("--frames", type=int, default=0,
+                   help="処理するフレーム数。0 で最後まで (試し切り用)")
     p.add_argument("--cache-dir", default="/cache/faceswap",
-                   help="InsightFace と inswapper の保存先")
+                   help="buffalo_l (自動で取得する) と inswapper_128 の置き場")
     p.add_argument("--swapper", default="inswapper_128.onnx",
-                   help="cache-dir 直下または絶対パスの inswapper モデル")
+                   help="交換モデルのファイル。相対パスは --cache-dir からたどる")
     return p.parse_args()
 
 
@@ -81,10 +83,11 @@ def main() -> None:
         faces = app.get(img)
         if not faces:
             sys.exit(f"face_swap.py: 参照画像から顔を検出できない: {rp}")
-        # 最大顔を本人とする。
+        # 参照画像ごとに、最も大きく映った顔をその人物の顔とする。
         faces.sort(key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]), reverse=True)
         ref_embs.append(faces[0].normed_embedding.astype(np.float64))
         ref_faces.append(faces[0])
+    # 同一人物かどうかは全参照画像の埋め込みの平均と比べて決め、交換元の顔には 1 枚目を使う。
     ref_mean = np.mean(np.stack(ref_embs), axis=0)
     source_face = ref_faces[0]
 
