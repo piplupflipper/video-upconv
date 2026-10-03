@@ -17,7 +17,17 @@ SWAPPER_URL = "https://github.com/facefusion/facefusion-assets/releases/download
 PROVIDERS = ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
 
-def parse_args() -> argparse.Namespace:
+def non_negative_int(value: str) -> int:
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"整数で指定する: {value}")
+    if n < 0:
+        raise argparse.ArgumentTypeError(f"0 以上で指定する: {value}")
+    return n
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("input")
     p.add_argument("output")
@@ -28,8 +38,8 @@ def parse_args() -> argparse.Namespace:
                    help="同一人物とみなすコサイン類似度の下限。上げると交換する顔が減る")
     p.add_argument("--det-size", type=int, default=640,
                    help="顔検出の入力の一辺。大きいほど小さく映った顔を検出できるが遅くなる")
-    p.add_argument("--start", type=int, default=0, help="処理を始めるフレーム番号 (試し切り用)")
-    p.add_argument("--frames", type=int, default=0,
+    p.add_argument("--start", type=non_negative_int, default=0, help="処理を始めるフレーム番号 (試し切り用)")
+    p.add_argument("--frames", type=non_negative_int, default=0,
                    help="処理するフレーム数。0 で最後まで (試し切り用)")
     p.add_argument("--cache-dir", default="/cache/faceswap",
                    help="buffalo_l (自動で取得する) と inswapper_128 の置き場")
@@ -37,7 +47,39 @@ def parse_args() -> argparse.Namespace:
                    help="交換モデルのファイル。相対パスは --cache-dir からたどる")
     p.add_argument("--allow-cpu", action="store_true",
                    help="CUDA で推論できないときに CPU で続行する。付けなければエラーで終了する")
-    return p.parse_args()
+    p.add_argument("--overwrite", action="store_true", help="出力ファイルが既にあれば上書きする")
+    return p.parse_args(argv)
+
+
+def same_file(a: str, b: str) -> bool:
+    if os.path.exists(b):
+        return os.path.samefile(a, b)
+    return os.path.realpath(a) == os.path.realpath(b)
+
+
+def check_paths(args: argparse.Namespace) -> tuple[list[str], str]:
+    """モデルを読み込む前に済ませられる検査を行い、参照画像のパスと交換モデルのパスを返す。"""
+    if not os.path.isfile(args.input):
+        sys.exit(f"face_swap.py: 入力ファイルがコンテナ内に見つからない: {args.input}\n"
+                 "work/ の外にある動画は face_swap.sh 経由で渡す")
+    if same_file(args.input, args.output):
+        sys.exit(f"face_swap.py: 入力と出力が同じファイルになっている: {args.output}")
+    if os.path.exists(args.output) and not args.overwrite:
+        sys.exit(f"face_swap.py: 出力ファイルが既にある: {args.output}\n上書きするなら --overwrite を付ける")
+
+    ref_paths = [s.strip() for s in args.ref.split(",") if s.strip()]
+    if not ref_paths:
+        sys.exit("face_swap.py: --ref が空である")
+    for path in ref_paths:
+        if not os.path.isfile(path):
+            sys.exit(f"face_swap.py: 参照画像がコンテナ内に見つからない: {path}\n"
+                     "work/ の外にある画像は face_swap.sh 経由で渡す")
+
+    swapper_path = os.path.join(args.cache_dir, args.swapper)
+    if not os.path.isfile(swapper_path):
+        sys.exit(f"face_swap.py: 交換モデルが見つからない: {swapper_path}\n"
+                 f"{SWAPPER_URL} を取得して {os.path.dirname(swapper_path)} に置く (既定ではホストの cache/faceswap/)")
+    return ref_paths, swapper_path
 
 
 def cosine(a: np.ndarray, b: np.ndarray) -> float:
@@ -83,19 +125,7 @@ def load_models(args: argparse.Namespace, swapper_path: str):
 
 def main() -> None:
     args = parse_args()
-    if not os.path.isfile(args.input):
-        sys.exit(f"face_swap.py: 入力ファイルが見つからない: {args.input}")
-    ref_paths = [s.strip() for s in args.ref.split(",") if s.strip()]
-    if not ref_paths:
-        sys.exit("face_swap.py: --ref が空である")
-    for rp in ref_paths:
-        if not os.path.isfile(rp):
-            sys.exit(f"face_swap.py: 参照画像が見つからない: {rp}")
-
-    swapper_path = os.path.join(args.cache_dir, args.swapper)
-    if not os.path.isfile(swapper_path):
-        sys.exit(f"face_swap.py: 交換モデルが見つからない: {swapper_path}\n"
-                 f"{SWAPPER_URL} を取得して {os.path.dirname(swapper_path)} に置く (既定ではホストの cache/faceswap/)")
+    ref_paths, swapper_path = check_paths(args)
     app, swapper = load_models(args, swapper_path)
 
     ref_embs = []
