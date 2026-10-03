@@ -84,6 +84,9 @@ TensorRT のライブラリ（約 3.7GB）を `pypi.nvidia.com` から取得す�
 
 # 720p を 4 倍モデルで 4K にする
 ./upconv.sh input.mp4 out.mp4 --sr-model realesr_general_x4v3
+
+# 4:3 の映像を 16:9 に引き伸ばして 4K にする（3840x2160）
+./upconv.sh input.mp4 out.mp4 --aspect 16:9
 ```
 
 主なオプションは次のとおりである。
@@ -96,6 +99,7 @@ TensorRT のライブラリ（約 3.7GB）を `pypi.nvidia.com` から取得す�
 | `--sc-threshold` | 0.15 | シーンチェンジとみなす隣接フレームの輝度差（0〜1） |
 | `--no-sc` | なし | シーンチェンジ検出を無効にする |
 | `--height` | 2160 | 出力の高さ。0 で拡大しない |
+| `--aspect` | なし（元の比率） | 出力のアスペクト比（`16:9` や `2.39`）。高さはそのままで、幅を引き伸ばして合わせる。切り抜きや黒帯は付けない |
 | `--sr-model` | OpenProteus_Compact_2x | 超解像のモデル |
 | `--order` | vfi-first | 補間と拡大の順序 |
 | `--cq` | 20 | NVENC の品質値。小さいほど高画質で大きいファイルになる |
