@@ -196,13 +196,15 @@ def writer_command(path: str, audio_src: str, info: VideoInfo, start: int, count
           "setparams=range=limited:color_primaries=bt709:color_trc=bt709:colorspace=bt709")
     # 音声は元の動画から映像と同じ範囲だけを切り出す。音声の無い入力では 1:a? が何も選ばない。
     # -shortest は付けない。音声が映像より短い入力で、映像まで音声の長さで打ち切られるためである。
+    # -ss は直前の映像のキーフレームまで戻るので、-copypriorss 0 で範囲より前の音声パケットを捨てる。
+    # 残すと、mkv では映像の開始がその分だけ遅れ、upconv.py がフレーム番号で読むときに音声とずれる。
     audio_range = ["-ss", f"{float(start / info.fps):.6f}", "-t", f"{float(count / info.fps):.6f}"]
     return [
         "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
         "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{info.width}x{info.height}",
         "-framerate", f"{info.fps.numerator}/{info.fps.denominator}", "-i", "pipe:",
         *audio_range, "-i", audio_src,
-        "-map", "0:v", "-map", "1:a?", "-c:a", "copy",
+        "-map", "0:v", "-map", "1:a?", "-c:a", "copy", "-copypriorss", "0",
         "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-qp", str(qp),
         "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv",
         path,
