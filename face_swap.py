@@ -13,6 +13,9 @@ import sys
 import cv2
 import numpy as np
 
+SWAPPER_URL = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/inswapper_128.onnx"
+PROVIDERS = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -32,6 +35,8 @@ def parse_args() -> argparse.Namespace:
                    help="buffalo_l (自動で取得する) と inswapper_128 の置き場")
     p.add_argument("--swapper", default="inswapper_128.onnx",
                    help="交換モデルのファイル。相対パスは --cache-dir からたどる")
+    p.add_argument("--allow-cpu", action="store_true",
+                   help="CUDA で推論できないときに CPU で続行する。付けなければエラーで終了する")
     return p.parse_args()
 
 
@@ -40,6 +45,40 @@ def cosine(a: np.ndarray, b: np.ndarray) -> float:
     if denom == 0:
         return 0.0
     return float(np.dot(a, b) / denom)
+
+
+def load_models(args: argparse.Namespace, swapper_path: str):
+    """InsightFace の検出器と交換モデルを読み込み、CUDA で動くことを確かめる。"""
+    # insightface が読み込む albumentations は、import のたびに新しい版の有無をネットワークへ問い合わせる。
+    os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
+    import onnxruntime
+
+    # CUDA 13 と cuDNN 9 の共有ライブラリはシステムには無く、torch と一緒に pip で入ったものを使う。
+    # セッションを作る前に読み込んでおかないと、CUDA のプロバイダが共有ライブラリを見つけられない。
+    onnxruntime.preload_dlls()
+
+    from insightface.app import FaceAnalysis
+    from insightface.model_zoo import get_model
+
+    os.makedirs(args.cache_dir, exist_ok=True)
+    app = FaceAnalysis(name="buffalo_l", root=args.cache_dir, providers=PROVIDERS)
+    app.prepare(ctx_id=0, det_size=(args.det_size, args.det_size))
+    swapper = get_model(swapper_path, providers=PROVIDERS)
+
+    # CUDA のプロバイダを初期化できなかったセッションは、例外を出さずに CPU で作られる。
+    sessions = {name: model.session for name, model in app.models.items()}
+    sessions["swapper"] = swapper.session
+    on_cpu = [name for name, session in sessions.items() if PROVIDERS[0] not in session.get_providers()]
+    if on_cpu:
+        reason = (f"face_swap.py: CUDA で推論できないモデルがある: {', '.join(on_cpu)}\n"
+                  f"onnxruntime {onnxruntime.__version__} が使えるプロバイダ: "
+                  f"{', '.join(onnxruntime.get_available_providers())}\n"
+                  "原因は、この上に onnxruntime が出力したエラーに書かれている "
+                  "(共有ライブラリが見つからない、コンテナから GPU が見えない、など)")
+        if not args.allow_cpu:
+            sys.exit(f"{reason}\nCPU で続行するなら --allow-cpu を付ける")
+        print(f"{reason}\n--allow-cpu が付いているので CPU で続行する", file=sys.stderr)
+    return app, swapper
 
 
 def main() -> None:
@@ -53,26 +92,11 @@ def main() -> None:
         if not os.path.isfile(rp):
             sys.exit(f"face_swap.py: 参照画像が見つからない: {rp}")
 
-    # 遅延 import で --help を軽くする。
-    from insightface.app import FaceAnalysis
-    from insightface.model_zoo import get_model
-
-    os.makedirs(args.cache_dir, exist_ok=True)
-    os.environ.setdefault("INSIGHTFACE_HOME", args.cache_dir)
-
-    app = FaceAnalysis(name="buffalo_l", root=args.cache_dir,
-                       providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
-    app.prepare(ctx_id=0, det_size=(args.det_size, args.det_size))
-
-    if os.path.isabs(args.swapper):
-        swapper_path = args.swapper
-    else:
-        swapper_path = os.path.join(args.cache_dir, args.swapper)
+    swapper_path = os.path.join(args.cache_dir, args.swapper)
     if not os.path.isfile(swapper_path):
         sys.exit(f"face_swap.py: 交換モデルが見つからない: {swapper_path}\n"
-                 "https://github.com/facefusion/facefusion-assets/releases/download/models/inswapper_128.onnx "
-                 "を取得して cache-dir へ置く")
-    swapper = get_model(swapper_path, providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+                 f"{SWAPPER_URL} を取得して {os.path.dirname(swapper_path)} に置く (既定ではホストの cache/faceswap/)")
+    app, swapper = load_models(args, swapper_path)
 
     ref_embs = []
     ref_faces = []
