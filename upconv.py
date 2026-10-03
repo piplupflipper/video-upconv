@@ -168,14 +168,15 @@ def main() -> None:
     print(f"input : {src.width}x{src.height} {float(src.fps):.3f}fps {src.num_frames}f", file=sys.stderr)
     print(f"output: {clip.width}x{clip.height} {float(fps):.3f}fps {clip.num_frames}f", file=sys.stderr)
 
-    # 音声は元の動画から映像と同じ範囲だけを切り出す。-shortest だけでは音声が止まらなかった。
+    # 音声は元の動画から映像と同じ範囲だけを切り出す。
+    # -shortest は付けない。音声が映像より先に終わる入力で、映像が音声の終端付近で打ち切られる。
     ss = args.start * src.fps_den / src.fps_num
     duration = src.num_frames * src.fps_den / src.fps_num
     ffmpeg = [
         "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y" if args.overwrite else "-n",
         "-f", "yuv4mpegpipe", "-i", "pipe:",
         "-ss", f"{ss:.6f}", "-t", f"{duration:.6f}", "-i", args.input,
-        "-map", "0:v", "-map", "1:a?", "-c:a", "copy", "-shortest",
+        "-map", "0:v", "-map", "1:a?", "-c:a", "copy",
         "-c:v", "hevc_nvenc", "-profile:v", "main10", "-preset", args.preset,
         "-rc", "vbr", "-cq", str(args.cq), "-b:v", "0",
         "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
