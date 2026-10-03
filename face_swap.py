@@ -26,7 +26,7 @@ PROVIDERS = ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
 
 class VideoInfo(NamedTuple):
-    width: int
+    width: int  # 回転のメタデータを適用した後の大きさ
     height: int
     fps: fractions.Fraction
     num_frames: int | None  # コンテナからフレーム数が分からなければ None
@@ -101,7 +101,7 @@ def check_paths(args: argparse.Namespace) -> tuple[list[str], str]:
 
 
 def probe(path: str) -> VideoInfo:
-    """ffprobe で、最初の映像ストリームの大きさ、fps (有理数)、フレーム数、色空間のタグを調べる。"""
+    """ffprobe で、最初の映像ストリームの回転後の大きさ、fps (有理数)、フレーム数、色空間のタグを調べる。"""
     def ffprobe(*options: str) -> dict:
         cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", *options, "-of", "json", path]
         res = subprocess.run(cmd, capture_output=True, text=True)
@@ -110,7 +110,8 @@ def probe(path: str) -> VideoInfo:
             sys.exit(f"face_swap.py: 映像ストリームを読めない: {path}\n{res.stderr.strip()}")
         return streams[0]
 
-    st = ffprobe("-show_entries", "stream=width,height,r_frame_rate,avg_frame_rate,nb_frames,color_space")
+    st = ffprobe("-show_entries",
+                 "stream=width,height,r_frame_rate,avg_frame_rate,nb_frames,color_space:stream_side_data=rotation")
 
     def rate(key: str) -> fractions.Fraction | None:
         try:
@@ -133,9 +134,14 @@ def probe(path: str) -> VideoInfo:
         counted = ffprobe("-count_packets", "-show_entries", "stream=nb_read_packets")
         num_frames = str(counted.get("nb_read_packets", ""))
     matrix = st.get("color_space")
+    # ffmpeg は復号のときに回転のメタデータを適用するので、90 度や 270 度なら幅と高さが入れ替わる。
+    width, height = int(st["width"]), int(st["height"])
+    rotation = next((d["rotation"] for d in st.get("side_data_list", []) if "rotation" in d), 0)
+    if round(float(rotation)) % 180 == 90:
+        width, height = height, width
     return VideoInfo(
-        width=int(st["width"]),
-        height=int(st["height"]),
+        width=width,
+        height=height,
         fps=fps,
         num_frames=int(num_frames) if num_frames.isdigit() else None,
         matrix=matrix if matrix and matrix != "unknown" else None,
@@ -150,8 +156,9 @@ def reader_command(path: str, info: VideoInfo, start: int, count: int | None) ->
         trim += f":end_frame={start + count}"
     # 色空間のタグが無い入力は、upconv.py の to_rgbh と同じ規則で行列を決める。
     matrix = "auto" if info.matrix else ("bt709" if info.height >= 720 else "bt601")
+    # 回転のメタデータは ffmpeg が適用する。upconv.py が使う BestSource も適用するので、向きが揃う。
     return [
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-noautorotate", "-i", path,
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-i", path,
         "-map", "0:v:0", "-vf", f"{trim},scale=in_color_matrix={matrix},format=bgr24",
         "-fps_mode", "passthrough", "-f", "rawvideo", "pipe:",
     ]
