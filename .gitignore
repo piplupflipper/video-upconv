@@ -1,5 +1,5 @@
 # 入出力の動画とテストログ
-/work/
+/work
 # TensorRT エンジンなどのキャッシュ (GPU と版ごとに固有)
-/cache/
+/cache
 /build.log

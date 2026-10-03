@@ -49,40 +49,45 @@ TensorRT の推論用エンジンは、入力解像度とモデルの組み合�
 
 ```sh
 cd video-upconv
-mkdir -p work cache  # 入出力の動画とキャッシュの置き場。git では管理しない
+mkdir -p work cache  # 動画とキャッシュの置き場。git では管理しない
 docker compose build
 ```
 
 イメージは約 18.5GB になる。
 TensorRT のライブラリ（約 3.7GB）を `pypi.nvidia.com` から取得するので、回線によっては 1 時間以上かかる。
+`upconv.py` は `compose.yaml` がコンテナにマウントするので、スクリプトを修正してもイメージを再ビルドする必要はない。
 
 ## 使い方
 
-変換したい動画を `work/` に置き、次を実行する。
+`upconv.sh` に入力と出力のパスを渡す。
+パスは WSL から見えるものなら何でもよい（`/mnt/d/...` のような Windows 側のドライブも可）。
 
 ```sh
-docker compose run --rm upconv input.mp4 output.mp4
+./upconv.sh /mnt/d/videos/input.mp4 /mnt/d/videos/output.mp4
 ```
+
+`upconv.sh` は、入力ファイルのディレクトリを読み取り専用で、出力ファイルのディレクトリを書き込み可能でコンテナにマウントしてから `upconv.py` を実行する。
+コンテナには `compose.yaml` が `work/` と `cache/` しかマウントしないので、`docker compose run` を直接使う場合は動画を `work/` に置く必要がある。
 
 既定では 120fps 前後への補間と、高さ 2160 への拡大を両方行う。
 長い動画は、`--frames` で一部だけを変換して画質と速度を確かめてから全体を変換するとよい。
 
 ```sh
 # 1000 フレーム目から 240 フレームだけ試す
-docker compose run --rm upconv input.mp4 trial.mp4 --start 1000 --frames 240
+./upconv.sh input.mp4 trial.mp4 --start 1000 --frames 240
 
 # 補間だけ行う
-docker compose run --rm upconv input.mp4 out.mp4 --height 0
+./upconv.sh input.mp4 out.mp4 --height 0
 
 # 拡大だけ行う（1440p）
-docker compose run --rm upconv input.mp4 out.mp4 --target-fps 0 --height 1440
+./upconv.sh input.mp4 out.mp4 --target-fps 0 --height 1440
 
 # 720p を 4 倍モデルで 4K にする
-docker compose run --rm upconv input.mp4 out.mp4 --sr-model realesr_general_x4v3
+./upconv.sh input.mp4 out.mp4 --sr-model realesr_general_x4v3
 ```
 
 主なオプションは次のとおりである。
-全オプションは `docker compose run --rm upconv --help` で表示できる。
+全オプションは `./upconv.sh --help` で表示できる。
 
 | オプション | 既定値 | 意味 |
 |---|---|---|
