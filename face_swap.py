@@ -14,6 +14,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable
 from typing import NamedTuple
@@ -196,8 +197,8 @@ def stop(proc: subprocess.Popen | None) -> None:
 def convert(args: argparse.Namespace, info: VideoInfo, process: Callable[[np.ndarray], np.ndarray]) -> int:
     """入力のフレームを 1 枚ずつ process に通して出力へ書き、書いたフレーム数を返す。
 
-    一時ファイルへ書き、最後まで成功したときだけ出力のパスへ移す。
-    失敗や中断のときは一時ファイルを消す。
+    自分で作った一時ファイルへ書き、最後まで成功したときだけ出力のパスへ移す。
+    失敗や中断のときは、その一時ファイルを消す。
     """
     count = args.frames or None
     expected = None
@@ -205,14 +206,21 @@ def convert(args: argparse.Namespace, info: VideoInfo, process: Callable[[np.nda
         expected = min(count or info.num_frames, info.num_frames - args.start)
     total = expected if expected is not None else count
 
-    root, ext = os.path.splitext(args.output)
-    tmp = f"{root}.tmp{ext}"
     frame_bytes = info.width * info.height * 3
-    reader = writer = None
+    reader = writer = tmp = None
     done = 0
     writer_gone = False
     t0 = time.monotonic()
     try:
+        # 一時ファイルは出力と同じディレクトリに一意な名前で作り、既存のファイルと衝突しないようにする。
+        # 拡張子は、ffmpeg が出力の形式を決められるよう出力と同じにする。
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(args.output) or ".", prefix=".face_swap-",
+                                   suffix=os.path.splitext(args.output)[1])
+        os.close(fd)
+        # mkstemp は所有者しか読めないファイルを作るので、umask に従う通常の権限に直す。
+        umask = os.umask(0)
+        os.umask(umask)
+        os.chmod(tmp, 0o666 & ~umask)
         reader = subprocess.Popen(reader_command(args.input, info, args.start, count), stdout=subprocess.PIPE)
         writer = subprocess.Popen(writer_command(tmp, args.input, info, args.start, total, args.qp),
                                   stdin=subprocess.PIPE)
@@ -256,7 +264,7 @@ def convert(args: argparse.Namespace, info: VideoInfo, process: Callable[[np.nda
     finally:
         stop(reader)
         stop(writer)
-        if os.path.exists(tmp):
+        if tmp is not None and os.path.exists(tmp):
             os.remove(tmp)
     return done
 
@@ -306,10 +314,26 @@ def cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / denom)
 
 
+def interrupt_once() -> None:
+    """SIGINT と SIGTERM を 1 回だけ例外に変え、以後は無視する。
+
+    コンテナの PID 1 として動くと SIGTERM の既定動作が働かないので、例外に変えて後始末を通す。
+    後始末の途中で同じシグナルをもう一度受けると一時ファイルが残るので、2 回目からは無視する。
+    """
+    def handler(signum: int, _frame) -> None:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt
+        sys.exit(143)
+
+    signal.signal(signal.SIGINT, handler)
+    signal.signal(signal.SIGTERM, handler)
+
+
 def main() -> None:
     args = parse_args()
-    # コンテナの PID 1 として動くと SIGTERM の既定動作が働かないので、例外に変えて後始末を通す。
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    interrupt_once()
 
     ref_paths, swapper_path = check_paths(args)
     info = probe(args.input)
