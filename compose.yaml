@@ -1,0 +1,10 @@
+services:
+  upconv:
+    build: .
+    image: video-upconv:local
+    gpus: all
+    user: "${UID:-1000}:${GID:-1000}"
+    shm_size: 2gb
+    volumes:
+      - ./work:/work
+      - ./cache:/cache
