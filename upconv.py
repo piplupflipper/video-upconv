@@ -52,6 +52,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--preset", default="p5", help="hevc_nvenc のプリセット p1 (速い) から p7 (高画質)")
     p.add_argument("--cache-dir", default="/cache/trt")
     p.add_argument("--force", action="store_true", help="sr-first で 1440p を超える補間を許可する")
+    p.add_argument("--overwrite", action="store_true", help="出力ファイルが既にあれば上書きする")
     args = p.parse_args()
     if args.order == "sr-first" and args.height > 1440 and args.target_fps > 0 and not args.force:
         # 2026-10-03 に 3060 Ti (8GB) で 4K の RIFE エンジンをビルドした際、WSL ごと応答しなくなった。
@@ -137,6 +138,8 @@ def main() -> None:
     if not os.path.isfile(args.input):
         sys.exit(f"upconv.py: 入力ファイルがコンテナ内に見つからない: {args.input}\n"
                  "work/ の外にある動画は upconv.sh 経由で渡す")
+    if os.path.exists(args.output) and not args.overwrite:
+        sys.exit(f"upconv.py: 出力ファイルが既にある: {args.output}\n上書きするなら --overwrite を付ける")
 
     src = core.bs.VideoSource(args.input)
     if args.start >= src.num_frames:
@@ -169,7 +172,7 @@ def main() -> None:
     ss = args.start * src.fps_den / src.fps_num
     duration = src.num_frames * src.fps_den / src.fps_num
     ffmpeg = [
-        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
+        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y" if args.overwrite else "-n",
         "-f", "yuv4mpegpipe", "-i", "pipe:",
         "-ss", f"{ss:.6f}", "-t", f"{duration:.6f}", "-i", args.input,
         "-map", "0:v", "-map", "1:a?", "-c:a", "copy", "-shortest",
