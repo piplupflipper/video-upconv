@@ -18,6 +18,18 @@ from vsrife import rife
 core = vs.core
 
 
+def parse_aspect(value: str) -> fractions.Fraction:
+    """`16:9` や `2.39` を幅 / 高さの比に変換する。"""
+    try:
+        w, _, h = value.partition(":")
+        ratio = fractions.Fraction(w) / fractions.Fraction(h or "1")
+    except (ValueError, ZeroDivisionError):
+        raise argparse.ArgumentTypeError(f"アスペクト比は 16:9 や 2.39 の形で指定する: {value}")
+    if ratio <= 0:
+        raise argparse.ArgumentTypeError(f"アスペクト比は正の値で指定する: {value}")
+    return ratio
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("input")
@@ -28,6 +40,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-sc", action="store_true", help="シーンチェンジ検出を無効にする")
     p.add_argument("--sc-threshold", type=float, default=0.15)
     p.add_argument("--height", type=int, default=2160, help="出力の高さ。0 で超解像しない")
+    p.add_argument("--aspect", type=parse_aspect,
+                   help="出力のアスペクト比 (16:9 や 2.39)。高さはそのままで幅を引き伸ばして合わせる")
     p.add_argument("--sr-model", default="OpenProteus_Compact_2x",
                    help="OpenProteus_Compact_2x / realesr_general_x4v3 / realesr_general_wdn_x4v3 / RealESRGAN_x2plus")
     p.add_argument("--order", choices=["vfi-first", "sr-first"], default="vfi-first",
@@ -91,15 +105,29 @@ def interpolate(clip: vs.VideoNode, args: argparse.Namespace) -> vs.VideoNode:
     )
 
 
+def even(x: float) -> int:
+    return round(x / 2) * 2
+
+
 def upscale(clip: vs.VideoNode, args: argparse.Namespace) -> vs.VideoNode:
     if args.height <= clip.height:
         return clip
     clip = realesrgan(clip, model=RealESRGANModel[args.sr_model], trt=True, trt_cache_dir=args.cache_dir)
-    # モデルの倍率で目標を超えた分は縮小で合わせる。幅は 2 の倍数にそろえる。
-    width = round(clip.width * args.height / clip.height / 2) * 2
+    # モデルの倍率で目標を超えた分は縮小で合わせる。--aspect があれば同じリサイズで幅も引き伸ばす。
+    if args.aspect:
+        width = even(args.height * args.aspect)
+    else:
+        width = even(clip.width * args.height / clip.height)
     if (width, args.height) != (clip.width, clip.height):
         clip = core.resize.Spline36(clip, width=width, height=args.height)
     return clip
+
+
+def stretch_to_aspect(clip: vs.VideoNode, aspect: fractions.Fraction) -> vs.VideoNode:
+    width = even(clip.height * aspect)
+    if width == clip.width:
+        return clip
+    return core.resize.Spline36(clip, width=width, height=clip.height)
 
 
 def main() -> None:
@@ -126,6 +154,10 @@ def main() -> None:
         if step is upscale and args.height <= 0:
             continue
         clip = step(clip, args)
+
+    # 超解像しなかった場合は、ここでアスペクト比を合わせる。
+    if args.aspect:
+        clip = stretch_to_aspect(clip, args.aspect)
 
     clip = core.resize.Bicubic(clip, format=vs.YUV420P10, matrix_s="709")
 
