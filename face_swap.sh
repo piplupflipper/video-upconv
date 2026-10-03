@@ -42,7 +42,15 @@ map_refs() {
   local parts=() p abs dir
   mapped=""
   IFS=, read -ra parts <<< "$1"
+  if [[ ${#parts[@]} -eq 0 ]]; then
+    echo "face_swap.sh: --ref が空である" >&2
+    exit 1
+  fi
   for p in "${parts[@]}"; do
+    if [[ -z $p ]]; then
+      echo "face_swap.sh: --ref に空の要素がある: $1" >&2
+      exit 1
+    fi
     abs=$(realpath -m "$p")
     if [[ ! -f $abs ]]; then
       echo "face_swap.sh: 参照画像が見つからない: $abs" >&2
