@@ -48,7 +48,8 @@ TensorRT の推論用エンジンは、入力解像度とモデルの組み合�
 ## ビルド
 
 ```sh
-cd ~/tmp/video-upconv
+cd video-upconv
+mkdir -p work cache  # 入出力の動画とキャッシュの置き場。git では管理しない
 docker compose build
 ```
 
