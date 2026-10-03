@@ -24,6 +24,14 @@ RUN pip install --extra-index-url https://pypi.nvidia.com \
       vsrife==5.7.0 \
       vsrealesrgan==5.2.1
 
+# 顔交換前段の依存は別層にする。
+# torch 層の再取得を避けるためである。
+RUN pip install \
+      "onnxruntime-gpu==1.22.0" \
+      "insightface==0.7.3" \
+      "opencv-python-headless==4.8.1.78" \
+      "numpy<2"
+
 # 実写向けに使うモデルだけをイメージへ焼き込む。
 # 他のモデルは `python -m vsrife` / `python -m vsrealesrgan` で全部取得できる (数 GB)。
 RUN python - <<'EOF'
@@ -50,6 +58,7 @@ for m in ["OpenProteus_Compact_2x", "realesr_general_x4v3", "realesr_general_wdn
 EOF
 
 COPY upconv.py /app/upconv.py
+COPY face_swap.py /app/face_swap.py
 
 # TensorRT エンジンと各種キャッシュは /cache (ボリューム) に置く。
 ENV HOME=/cache/home \
