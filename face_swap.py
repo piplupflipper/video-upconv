@@ -29,7 +29,7 @@ class VideoInfo(NamedTuple):
     width: int  # 回転のメタデータを適用した後の大きさ
     height: int
     fps: fractions.Fraction
-    num_frames: int | None  # コンテナからフレーム数が分からなければ None
+    num_frames: int  # 復号で得られるフレーム数
     matrix: str | None  # 色空間のタグ。無ければ None
 
 
@@ -128,11 +128,19 @@ def probe(path: str) -> VideoInfo:
     if fps is None:
         sys.exit(f"face_swap.py: fps を取得できない: {path}")
 
-    num_frames = st.get("nb_frames", "")
-    if not num_frames.isdigit():
-        # mkv などコンテナがフレーム数を持たない形式では、パケットを数える。
-        counted = ffprobe("-count_packets", "-show_entries", "stream=nb_read_packets")
-        num_frames = str(counted.get("nb_read_packets", ""))
+    # フレーム数はパケットを走査して数える。復号はしないので、復号して数えるよりずっと速い。
+    # mp4 のエディットリストが捨てるフレームは、パケットの破棄フラグ (D) で分かる。
+    # ffmpeg も BestSource もそれらを出力しないので、数に入れない。
+    cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "packet=flags", "-of", "csv=p=0", path]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    flags = res.stdout.split()
+    if res.returncode != 0 or not flags:
+        sys.exit(f"face_swap.py: 映像のパケットを読めない: {path}\n{res.stderr.strip()}")
+    # コンテナが宣言するフレーム数 (mp4 にはある) より読めたパケットが少なければ、ファイルが途中で切れている。
+    declared = st.get("nb_frames", "")
+    if declared.isdigit() and len(flags) < int(declared):
+        sys.exit(f"face_swap.py: 入力が途中で切れている: {path}\n"
+                 f"コンテナには {declared} フレームあるはずだが、読めたのは {len(flags)} フレーム分である")
     matrix = st.get("color_space")
     # ffmpeg は復号のときに回転のメタデータを適用するので、90 度や 270 度なら幅と高さが入れ替わる。
     width, height = int(st["width"]), int(st["height"])
@@ -143,7 +151,7 @@ def probe(path: str) -> VideoInfo:
         width=width,
         height=height,
         fps=fps,
-        num_frames=int(num_frames) if num_frames.isdigit() else None,
+        num_frames=sum("D" not in f for f in flags),
         matrix=matrix if matrix and matrix != "unknown" else None,
     )
 
@@ -164,7 +172,7 @@ def reader_command(path: str, info: VideoInfo, start: int, count: int | None) ->
     ]
 
 
-def writer_command(path: str, audio_src: str, info: VideoInfo, start: int, count: int | None, qp: int) -> list[str]:
+def writer_command(path: str, audio_src: str, info: VideoInfo, start: int, count: int, qp: int) -> list[str]:
     """標準入力の BGR 8bit の生フレームを符号化し、audio_src の音声を同じ範囲で多重化する ffmpeg。"""
     # 8bit の RGB は 10bit の YUV 4:4:4 にすると丸めで値が変わらず、qp 0 なら入力のフレームをそのまま復元できる。
     # scale の変換行列と出力のタグは、どちらも BT.709 のリミテッドレンジに揃える。
@@ -172,9 +180,7 @@ def writer_command(path: str, audio_src: str, info: VideoInfo, start: int, count
           "setparams=range=limited:color_primaries=bt709:color_trc=bt709:colorspace=bt709")
     # 音声は元の動画から映像と同じ範囲だけを切り出す。音声の無い入力では 1:a? が何も選ばない。
     # -shortest は付けない。音声が映像より短い入力で、映像まで音声の長さで打ち切られるためである。
-    audio_range = ["-ss", f"{float(start / info.fps):.6f}"]
-    if count is not None:
-        audio_range += ["-t", f"{float(count / info.fps):.6f}"]
+    audio_range = ["-ss", f"{float(start / info.fps):.6f}", "-t", f"{float(count / info.fps):.6f}"]
     return [
         "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
         "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{info.width}x{info.height}",
@@ -207,11 +213,7 @@ def convert(args: argparse.Namespace, info: VideoInfo, process: Callable[[np.nda
     自分で作った一時ファイルへ書き、最後まで成功したときだけ出力のパスへ移す。
     失敗や中断のときは、その一時ファイルを消す。
     """
-    count = args.frames or None
-    expected = None
-    if info.num_frames is not None:
-        expected = min(count or info.num_frames, info.num_frames - args.start)
-    total = expected if expected is not None else count
+    expected = min(args.frames or info.num_frames, info.num_frames - args.start)
 
     frame_bytes = info.width * info.height * 3
     reader = writer = tmp = None
@@ -228,8 +230,9 @@ def convert(args: argparse.Namespace, info: VideoInfo, process: Callable[[np.nda
         umask = os.umask(0)
         os.umask(umask)
         os.chmod(tmp, 0o666 & ~umask)
-        reader = subprocess.Popen(reader_command(args.input, info, args.start, count), stdout=subprocess.PIPE)
-        writer = subprocess.Popen(writer_command(tmp, args.input, info, args.start, total, args.qp),
+        reader = subprocess.Popen(reader_command(args.input, info, args.start, args.frames or None),
+                                  stdout=subprocess.PIPE)
+        writer = subprocess.Popen(writer_command(tmp, args.input, info, args.start, expected, args.qp),
                                   stdin=subprocess.PIPE)
         assert reader.stdout is not None and writer.stdin is not None
         while True:
@@ -244,9 +247,9 @@ def convert(args: argparse.Namespace, info: VideoInfo, process: Callable[[np.nda
                 writer_gone = True
                 break
             done += 1
-            if done % 50 == 0 or done == total:
+            if done % 50 == 0 or done == expected:
                 rate = done / (time.monotonic() - t0)
-                print(f"\r{done}/{total or '?'} frames  {rate:.2f} fps", end="", file=sys.stderr)
+                print(f"\r{done}/{expected} frames  {rate:.2f} fps", end="", file=sys.stderr)
         print(file=sys.stderr)
 
         reader.stdout.close()
@@ -261,8 +264,8 @@ def convert(args: argparse.Namespace, info: VideoInfo, process: Callable[[np.nda
             sys.exit(f"face_swap.py: 中間動画の書き出しに失敗した ({done} フレーム目、ffmpeg の終了コード {rc_writer})")
         if done == 0:
             sys.exit(f"face_swap.py: 処理できたフレームが無い (--start {args.start})")
-        if rc_reader != 0 or len(buf) > 0 or (expected is not None and done < expected):
-            sys.exit(f"face_swap.py: 入力を途中までしか読めなかった ({done}/{expected or '?'} フレーム、"
+        if rc_reader != 0 or len(buf) > 0 or done < expected:
+            sys.exit(f"face_swap.py: 入力を途中までしか読めなかった ({done}/{expected} フレーム、"
                      f"ffmpeg の終了コード {rc_reader})")
         written = probe(tmp).num_frames
         if written != done:
@@ -344,7 +347,7 @@ def main() -> None:
 
     ref_paths, swapper_path = check_paths(args)
     info = probe(args.input)
-    if info.num_frames is not None and args.start >= info.num_frames:
+    if args.start >= info.num_frames:
         sys.exit(f"face_swap.py: --start {args.start} が入力のフレーム数 {info.num_frames} 以上になっている")
 
     import cv2
@@ -380,7 +383,7 @@ def main() -> None:
             n_swap += 1
         return out
 
-    print(f"input : {info.width}x{info.height} {float(info.fps):.3f}fps {info.num_frames or '?'}f", file=sys.stderr)
+    print(f"input : {info.width}x{info.height} {float(info.fps):.3f}fps {info.num_frames}f", file=sys.stderr)
     t0 = time.monotonic()
     done = convert(args, info, swap)
     print(f"done in {(time.monotonic() - t0) / 60:.1f} min  frames={done} faces={n_face} swapped={n_swap}",
